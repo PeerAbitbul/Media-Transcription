@@ -197,12 +197,28 @@ the queue continues. On restart/reboot, pending jobs are re-queued automatically
 (an interrupted file restarts from the beginning — Whisper has no mid-file
 checkpoint).
 
-### License
+### Disclaimer
 
-[MIT](LICENSE) © 2026 Peer Abitbul.
+This is a personal, open-source project provided **"as is", without warranty of
+any kind** (see [LICENSE](LICENSE)). Use it at your own risk. You alone are
+responsible for the media you transcribe and for complying with applicable laws —
+including recording/consent rules, privacy, and copyright. The authors are not
+liable for any misuse of, or damage arising from, the software.
 
-Uses faster-whisper, FastAPI, Celery, Redis, python-telegram-bot, and the
-`aiogram/telegram-bot-api` server — each under its own license.
+### License & acknowledgements
+
+Licensed under the [MIT License](LICENSE) © 2026 Peer Abitbul.
+
+Everything this project builds on is open source, each under its own license,
+used as unmodified dependencies/tools (this project does not bundle or alter
+their source):
+
+- [faster-whisper](https://github.com/SYSTRAN/faster-whisper) — MIT · Whisper `large-v3` weights — MIT (OpenAI)
+- [FastAPI](https://fastapi.tiangolo.com/) — MIT · [Uvicorn](https://www.uvicorn.org/) — BSD
+- [Celery](https://docs.celeryq.dev/) — BSD · [Redis](https://redis.io/) — BSD / SSPL (per version)
+- [python-telegram-bot](https://python-telegram-bot.org/) — LGPL-3.0
+- [telegram-bot-api](https://github.com/tdlib/telegram-bot-api) — Boost Software License
+- [FFmpeg](https://ffmpeg.org/) — LGPL/GPL
 
 ---
 
@@ -302,7 +318,15 @@ docker compose up --build
 כל קובץ הוא job עצמאי. כשל בקובץ (פגום/בלי אודיו) מסומן `failed` עם השגיאה, פלט חלקי נמחק,
 והתור ממשיך. בהפעלה מחדש עבודות ממתינות חוזרות לתור אוטומטית (קובץ שנקטע מתחיל מ-0 — ל-Whisper אין checkpoint).
 
-### רישיון
+### כתב ויתור (Disclaimer)
 
-[MIT](LICENSE) © 2026 Peer Abitbul. משתמש ב-faster-whisper, FastAPI, Celery, Redis,
-python-telegram-bot, ושרת `aiogram/telegram-bot-api` — כל אחד תחת הרישיון שלו.
+זהו פרויקט אישי בקוד פתוח, מסופק **"כמות שהוא", ללא כל אחריות** (ראה [LICENSE](LICENSE)).
+השימוש על אחריותך בלבד. אתה האחראי הבלעדי לתוכן שאתה מתמלל ולעמידה בחוק — כולל כללי
+הקלטה/הסכמה, פרטיות וזכויות יוצרים. היוצרים אינם אחראים לשימוש לרעה או לכל נזק שייגרם מהתוכנה.
+
+### רישיון וקרדיטים
+
+תחת רישיון [MIT](LICENSE) © 2026 Peer Abitbul. כל מה שהפרויקט מבוסס עליו הוא קוד פתוח,
+כל אחד תחת הרישיון שלו, בשימוש כתלויות/כלים ללא שינוי: faster-whisper (MIT), מודל Whisper
+(MIT), FastAPI (MIT), Uvicorn (BSD), Celery (BSD), Redis (BSD/SSPL), python-telegram-bot
+(LGPL-3.0), telegram-bot-api (Boost), FFmpeg (LGPL/GPL).
