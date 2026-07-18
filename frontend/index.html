@@ -89,6 +89,21 @@
     .chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--brand); }
     @media (max-width: 720px) { .chip.model { display: none; } }
 
+    .lang-select {
+      font-family: var(--font-mono); font-size: 11.5px; color: var(--text);
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 999px; padding: 7px 11px; cursor: pointer;
+      max-width: 160px; appearance: none; -webkit-appearance: none;
+      background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+      background-position: calc(100% - 14px) center, calc(100% - 9px) center;
+      background-size: 5px 5px, 5px 5px; background-repeat: no-repeat;
+      padding-inline-end: 26px;
+    }
+    .lang-select:hover { border-color: #3a4763; }
+    .lang-select:focus { outline: none; border-color: var(--brand); }
+    .lang-select option { background: var(--surface-2); color: var(--text); }
+    @media (max-width: 600px) { .lang-select { max-width: 130px; } }
+
     .lang-toggle {
       display: inline-flex; padding: 3px; gap: 2px;
       background: var(--surface); border: 1px solid var(--border); border-radius: 999px;
@@ -340,6 +355,7 @@
     <div class="spacer"></div>
     <div class="head-tools">
       <span class="chip model" id="modelChip"><span class="dot"></span><span id="modelText"></span></span>
+      <select id="langSelect" class="lang-select" aria-label="Transcription language"></select>
       <button class="icon-btn head-gear" id="btnSettings" title="Telegram" aria-label="Settings">⚙</button>
       <div class="lang-toggle" id="langToggle" role="group" aria-label="Language">
         <button data-lang="he">עב</button>
@@ -443,10 +459,10 @@
     const T = {
       he: {
         dir: "rtl", htmlLang: "he",
-        title: "תמלול סרטונים", eyebrow: "סוויטת תמלול · מקומי",
+        title: "תמלול סרטונים", eyebrow: "תמלול מקומי",
         docTitle: "תמלול סרטונים",
         processAll: "עבד את הכל", refresh: "רענן", loading: "טוען…",
-        model: "מודל", language: "שפה",
+        model: "מודל", language: "שפה", langAuto: "זיהוי אוטומטי", langSaved: "שפת התמלול נשמרה",
         colFile: "קובץ", colStatus: "סטטוס", colActions: "פעולות",
         transcribe: "תמלל", retry: "נסה שוב", again: "תמלל שוב", preview: "תצוגה מקדימה",
         deleteLabel: "מחק",
@@ -504,10 +520,10 @@
       },
       en: {
         dir: "ltr", htmlLang: "en",
-        title: "Video Transcription", eyebrow: "Transcription suite · Local",
+        title: "Video Transcription", eyebrow: "Local transcription",
         docTitle: "Video Transcription",
         processAll: "Process all", refresh: "Refresh", loading: "Loading…",
-        model: "Model", language: "Language",
+        model: "Model", language: "Language", langAuto: "Auto-detect", langSaved: "Transcription language saved",
         colFile: "File", colStatus: "Status", colActions: "Actions",
         transcribe: "Transcribe", retry: "Retry", again: "Transcribe again", preview: "Preview",
         deleteLabel: "Delete",
@@ -844,13 +860,46 @@
     });
     document.getElementById("btnRefresh").addEventListener("click", () => { setStatus(""); render(); });
 
+    // Transcription-language options (native names; codes Whisper understands).
+    const LANGS = [
+      { code: "auto" }, { code: "he", name: "עברית" }, { code: "en", name: "English" },
+      { code: "ar", name: "العربية" }, { code: "ru", name: "Русский" },
+      { code: "fr", name: "Français" }, { code: "es", name: "Español" },
+      { code: "de", name: "Deutsch" }, { code: "it", name: "Italiano" },
+      { code: "pt", name: "Português" }, { code: "uk", name: "Українська" },
+      { code: "yi", name: "ייִדיש" }, { code: "tr", name: "Türkçe" },
+      { code: "pl", name: "Polski" }, { code: "nl", name: "Nederlands" },
+    ];
+
+    function buildLangSelect(current) {
+      const sel = document.getElementById("langSelect");
+      const list = LANGS.slice();
+      // If the stored code isn't in our list, add it so it stays selectable.
+      if (current && !list.some(l => l.code === current)) list.push({ code: current, name: current });
+      sel.innerHTML = list.map(l => {
+        const label = l.code === "auto" ? T[lang].langAuto : (l.name || l.code);
+        return `<option value="${l.code}">${label}</option>`;
+      }).join("");
+      sel.value = current || "he";
+    }
+
     async function loadConfig() {
       try {
         const c = await api("/api/config");
-        document.getElementById("modelText").textContent =
-          `${t("model")} ${c.model} · ${t("language")} ${c.language}`;
+        document.getElementById("modelText").textContent = `${t("model")} ${c.model}`;
+        buildLangSelect(c.language);
       } catch { /* non-critical */ }
     }
+
+    document.getElementById("langSelect").addEventListener("change", async (e) => {
+      try {
+        await api("/api/language", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ language: e.target.value }),
+        });
+        setStatus(t("langSaved"));
+      } catch (err) { setStatus(t("err") + ": " + err.message, true); }
+    });
 
     // ---------- Helpers ----------
     function escapeHtml(s) {

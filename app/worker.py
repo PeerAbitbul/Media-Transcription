@@ -93,9 +93,13 @@ def transcribe(self, job_id: int, filename: str):
 
     try:
         model = _get_model()
+        # Language is chosen in the UI and stored in the DB (falls back to the
+        # env default). "auto"/empty → let Whisper detect the language.
+        lang = db.get_setting("whisper_language", config.WHISPER_LANGUAGE)
+        lang = None if not lang or lang == "auto" else lang
         segments, info = model.transcribe(
             video_path,
-            language=config.WHISPER_LANGUAGE,
+            language=lang,
             beam_size=config.WHISPER_BEAM_SIZE,
             vad_filter=True,
             # Anti-loop settings (see config.py) — restore the temperature

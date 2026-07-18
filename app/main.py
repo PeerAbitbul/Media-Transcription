@@ -153,11 +153,20 @@ def get_config():
     return JSONResponse(
         {
             "model": config.WHISPER_MODEL,
-            "language": config.WHISPER_LANGUAGE,
+            "language": db.get_setting("whisper_language", config.WHISPER_LANGUAGE),
             "compute_type": config.WHISPER_COMPUTE_TYPE,
             "beam_size": config.WHISPER_BEAM_SIZE,
         }
     )
+
+
+@app.post("/api/language")
+def set_language(payload: dict):
+    """Set the transcription language (applies to new jobs). '' or 'auto' = detect."""
+    language = (payload or {}).get("language", "")
+    language = str(language).strip() or "auto"
+    db.set_setting("whisper_language", language)
+    return {"ok": True, "language": language}
 
 
 # --------------------------------------------------------------------------
