@@ -1,0 +1,27 @@
+# Secrets / env
+.env
+*.env
+!.env.example
+
+# Local runtime data — DB (holds bot token, api_id/api_hash) + telegram creds.
+# Never commit anything here except the placeholder.
+data/*
+!data/.gitkeep
+
+# Local media / output — do not commit
+videos/*
+transcripts/*
+!videos/.gitkeep
+!transcripts/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

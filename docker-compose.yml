@@ -1,0 +1,105 @@
+name: video-transcriber
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Append-only persistence so the task queue survives a restart/reboot.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DB_PATH=/app/data/jobs.db
+      - VIDEOS_DIR=/app/videos
+      - TRANSCRIPTS_DIR=/app/transcripts
+      - WHISPER_MODEL=${WHISPER_MODEL:-large-v3}
+      - WHISPER_LANGUAGE=${WHISPER_LANGUAGE:-he}
+    volumes:
+      # Read-write so the UI can delete videos (transcription only reads them).
+      - ${VIDEOS_DIR:-./videos}:/app/videos
+      # Transcription output (SRT + TXT).
+      - ${TRANSCRIPTS_DIR:-./transcripts}:/app/transcripts
+      # Shared SQLite DB between api and worker.
+      - ./data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    restart: unless-stopped
+    command: celery -A app.celery_app.celery worker --loglevel=info --concurrency=${WORKER_CONCURRENCY:-1}
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DB_PATH=/app/data/jobs.db
+      - VIDEOS_DIR=/app/videos
+      - TRANSCRIPTS_DIR=/app/transcripts
+      - WHISPER_MODEL=${WHISPER_MODEL:-large-v3}
+      - WHISPER_LANGUAGE=${WHISPER_LANGUAGE:-he}
+      - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE:-int8}
+      - WHISPER_BEAM_SIZE=${WHISPER_BEAM_SIZE:-8}
+    volumes:
+      - ${VIDEOS_DIR:-./videos}:/app/videos:ro
+      - ${TRANSCRIPTS_DIR:-./transcripts}:/app/transcripts
+      - ./data:/app/data
+      # Whisper model cache — named volume so the model is downloaded once per
+      # machine and survives restarts, down/up, and even image rebuilds.
+      - whisper-cache:/root/.cache/huggingface
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # Self-hosted local Telegram Bot API server — raises the download limit to 2GB
+  # and returns local file paths. Reads api_id/api_hash (entered in the web UI)
+  # from a file on ./data via its entrypoint, so no restart is needed to set up.
+  telegram-bot-api:
+    image: aiogram/telegram-bot-api:latest
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_CREDS_FILE=/data/telegram-api.env
+    entrypoint: ["/bin/sh", "/telegram-api-entrypoint.sh"]
+    volumes:
+      - ./scripts/telegram-api-entrypoint.sh:/telegram-api-entrypoint.sh:ro
+      - ./data:/data
+      - telegram-bot-api-data:/var/lib/telegram-bot-api
+
+  # Our Telegram bot: receives videos, saves them, enqueues transcription,
+  # renames files, and notifies on completion.
+  bot:
+    build: .
+    restart: unless-stopped
+    command: python -m app.bot
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DB_PATH=/app/data/jobs.db
+      - VIDEOS_DIR=/app/videos
+      - TRANSCRIPTS_DIR=/app/transcripts
+      - TELEGRAM_API_BASE=http://telegram-bot-api:8081
+      - TELEGRAM_CREDS_FILE=/app/data/telegram-api.env
+    volumes:
+      # Bot needs WRITE access to save/rename videos (api/worker mount it :ro).
+      - ${VIDEOS_DIR:-./videos}:/app/videos
+      - ${TRANSCRIPTS_DIR:-./transcripts}:/app/transcripts
+      - ./data:/app/data
+      # Shared with the local Bot API server so the bot can read downloaded files.
+      - telegram-bot-api-data:/var/lib/telegram-bot-api
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  whisper-cache:
+  telegram-bot-api-data:
+  redis-data:
