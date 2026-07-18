@@ -1,180 +1,308 @@
-# תמלול סרטונים — Local Video Transcription
+# Media Transcription · תמלול מדיה
 
-מערכת תמלול וידאו מקומית עם ממשק web, רצה כולה ב-Docker Compose.
-מבוססת על [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (מודל `large-v3` כברירת מחדל),
-עם עיבוד ברקע בתור — אפשר לזרוק כמה סרטונים, לסגור את המחשב לישון, והעיבוד ממשיך כל הלילה.
+A local, private, self-hosted transcription system with a web UI and a Telegram
+bot. Drop in videos or audio and get **SRT + TXT** transcripts, powered by
+[faster-whisper](https://github.com/SYSTRAN/faster-whisper) (`large-v3` by
+default). Everything runs on your machine in Docker — no cloud, no uploads to
+third parties.
 
-## ארכיטקטורה
+> **English first, then עברית below** · [דלג לעברית ↓](#עברית)
+
+---
+
+## English
+
+### Features
+
+- 🎬 **Video & audio** — mp4, mkv, avi, mov, webm… and mp3, wav, m4a, ogg, flac, voice notes.
+- 🌐 **Web UI (Hebrew / English)** — list media, transcribe one or all, watch live progress, preview the text, download SRT/TXT, rename, and delete.
+- 🗣️ **Language selector** — choose the transcription language (default Hebrew) or auto-detect; saved persistently.
+- 🤖 **Telegram bot** — send a video/audio/voice note and it downloads, transcribes, and notifies you. Full command set. Configured entirely from the web UI.
+- ⏳ **Background queue** — throw in many files and close the lid; jobs run one after another. Per-job error handling: one bad file never stops the rest.
+- ♻️ **Survives restart/reboot** — Redis persistence + startup re-queue means pending jobs resume on their own.
+- 📦 **Model cached per machine** — the Whisper model downloads once into a named volume (not baked into the image), and survives rebuilds.
+- 🔒 **Local & private** — personal use, no auth, nothing leaves your computer.
+
+### Architecture
 
 ```
-                 ┌──────────┐      HTTP       ┌──────────────┐
-   דפדפן (localhost:8000) ─────────────────►  │  api (FastAPI)│
-                 └──────────┘                 └──────┬───────┘
-                                                     │ Celery task (Redis)
-                                          ┌──────────▼───────┐
-                                          │      redis       │
-                                          └──────────┬───────┘
-                                                     │
-                                          ┌──────────▼───────┐   faster-whisper
-                                          │  worker (Celery) │──────────────────► SRT + TXT
-                                          └──────────────────┘
-        api + worker חולקים DB (SQLite) ומודל Whisper דרך named volume (whisper-cache).
+   Browser (localhost:8000) ──HTTP──►  api (FastAPI)  ──enqueue──►  redis  ──►  worker (Celery)
+                                            │                                       │ faster-whisper
+   Telegram app ──►  telegram-bot-api  ──►  bot  ──────────────────────────────────►  SRT + TXT
+                     (local, up to 2GB)      │
+                          all services share  SQLite (jobs + settings)  +  a Whisper model cache volume
 ```
 
-שלושה שירותים: **api** (ממשק + REST), **worker** (התמלול בפועל), **redis** (תור המשימות).
+Five services (all in `docker-compose.yml`): **api** (UI + REST), **worker**
+(the transcription), **redis** (the queue), **bot** (Telegram), and
+**telegram-bot-api** (a self-hosted local Bot API server for large downloads).
 
-## דרישות מוקדמות
+### Requirements
 
-- Docker + Docker Compose (Docker Desktop, או `docker` + `docker compose` בלינוקס).
-- אין צורך ב-Python או בהתקנות נוספות על המחשב — הכל רץ בקונטיינרים.
+- Docker + Docker Compose (Docker Desktop, or `docker` + `docker compose` on Linux).
+- No Python or other installs needed — everything runs in containers.
 
-## הרצה מהירה
+### Quick start
 
 ```bash
-# 1. (אופציונלי) העתק את קובץ ההגדרות ושנה מה שצריך
+# 1. (optional) copy the settings file and adjust
 cp .env.example .env
 
-# 2. שים קבצי וידאו (mp4/mkv/avi/…) בתיקיית videos/
-#    או הצבע על תיקייה אחרת — ראה "החלפת תיקיית וידאו" למטה.
+# 2. put video/audio files in ./videos  (or point VIDEOS_DIR elsewhere)
 
-# 3. הרם את המערכת
+# 3. bring it up
 docker compose up --build
 ```
 
-פתח בדפדפן: **http://localhost:8000**
+Open **http://localhost:8000**.
 
-בהרצה הראשונה, ה-worker יוריד את מודל Whisper (`large-v3`, כמה GB) לתוך ה-cache.
-זה קורה **פעם אחת בכל מחשב** — ראה "Cache של המודל" למטה. תמלול ראשון יתחיל רק אחרי שההורדה תסתיים.
+On the first run the worker downloads the Whisper model (`large-v3`, a few GB)
+into a cache volume — **once per machine**. The first transcription starts after
+that finishes. Stop with `Ctrl+C`, then `docker compose down` (your data and the
+model are kept).
 
-לעצירה: `Ctrl+C`, ואז `docker compose down` (הנתונים והמודל נשמרים).
+> **Note on paths with non-ASCII characters:** if the project folder name is not
+> plain ASCII, disable BuildKit so the build works:
+> `DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 docker compose up --build`
+> (or clone into an ASCII path).
 
-## שימוש
+### Using the web interface
 
-- **רשימת קבצים** — כל קובצי הווידאו שבתיקיית `videos/` מוצגים בטבלה, עם סטטוס.
-- **תמלל** — כפתור ליד כל קובץ מוסיף אותו לתור. הסטטוס עובר `בתור → מעבד → הושלם`.
-- **עבד את הכל** — מוסיף לתור כל קובץ שעדיין לא תומלל.
-- **התקדמות** — בזמן עיבוד מוצג אחוז התקדמות (מבוסס על זמן־האודיו שכבר תומלל).
-- **תוצאה** — כשה-job מסתיים, מופיעים קישורי הורדה ל-**SRT** ול-**TXT**.
-  הקבצים נשמרים גם בתיקיית `transcripts/` (בשם זהה לקובץ המקור).
-- **תצוגה מקדימה** — לחיצה על כרטיס שהושלם פותחת חלון עם התמלול (טקסט או כתוביות SRT), עם כפתור העתקה.
-- **עברית / English** — כפתור בפינה מחליף את שפת הממשק ואת כיוון הכתיבה (RTL/LTR). הבחירה נשמרת בדפדפן.
-- הממשק מבצע polling כל 4 שניות, כך שהסטטוס מתעדכן לבד.
+- Each media file in `./videos` appears as a row with its status.
+- **Transcribe** queues a file; status goes `queued → processing → done`, with a live **percentage** while processing.
+- **Process all** queues everything not yet done.
+- **Preview** opens the transcript (plain text or SRT with timecodes) with a copy button.
+- **SRT / TXT** download the results (also saved in `./transcripts`).
+- **🗑 Delete** removes a media file, its transcripts, and its records (with confirmation).
+- **Language dropdown** (top bar) chooses the transcription language; **⚙️** opens Telegram setup.
+- The page polls every few seconds, so status updates on its own.
 
-## בוט Telegram (אופציונלי)
+### Telegram bot (optional)
 
-אפשר לשלוח סרטונים לבוט טלגרם, והם יורדים, נשמרים בתיקייה ומתומללים אוטומטית — עם התראה בסיום ופקודות לניהול.
+Send media to a bot and get it transcribed, with completion notifications.
 
-**הגדרה — הכל מהממשק, פעם אחת (נשמר לתמיד):**
-1. פתח את http://localhost:8000 ולחץ על **⚙️** (למעלה).
-2. עקוב אחר השלבים בחלון:
-   - **חובה** — צור בוט ב-[@BotFather](https://t.me/BotFather) (`/newbot`) → קבל **Bot Token**.
-   - **חובה** — קבל את ה-**User ID** שלך מ-[@userinfobot](https://t.me/userinfobot).
-   - **אופציונלי** — צור אפליקציה ב-[my.telegram.org](https://my.telegram.org/auth) → **api_id** + **api_hash**.
-3. הזן, סמן **הפעל את הבוט**, ושמור. חיווי החיבור יעבור ל**מחובר ✅**.
+**Setup — all from the web UI, once (saved forever):**
 
-ההגדרות נשמרות ב-SQLite על ה-volume הקבוע — מזינים פעם אחת, וזה חוזר לבד גם אחרי `down/up` או rebuild.
+1. Open http://localhost:8000 and click **⚙️**.
+2. Follow the steps in the dialog:
+   - **Required** — create a bot with [@BotFather](https://t.me/BotFather) (`/newbot`) → **Bot Token**.
+   - **Required** — get your **User ID** from [@userinfobot](https://t.me/userinfobot).
+   - **Optional** — create an app at [my.telegram.org](https://my.telegram.org/auth) → **api_id** + **api_hash**.
+3. Fill the fields, tick **Enable the bot**, and Save. The badge turns **Connected ✅**.
 
-**שני מצבים (לפי api_id/api_hash):**
-| | בלי api_id/api_hash | עם api_id/api_hash |
-|---|---|---|
-| גודל סרטון מרבי | **20MB** (סרטונים קצרים) | **2GB** |
-| דרך | api.telegram.org הרגיל | **Local Bot API Server** (שירות `telegram-bot-api`) |
+Settings are stored in SQLite on a persistent volume — enter once, and it comes
+back on its own after `down/up` or a rebuild.
 
-לסרטונים קצרים — Token + User ID מספיקים. לסרטונים גדולים — הוסף api_id/api_hash. המצב הפעיל מוצג בחיווי החיבור (למשל "מחובר ✅ · עד 2GB").
+**Two modes (based on api_id/api_hash):**
 
-> אם תשנה את api_id/api_hash בעתיד (נדיר), הרץ `docker compose restart telegram-bot-api`. שאר ההגדרות נטענות חם ללא restart.
+|                    | Without api_id/api_hash | With api_id/api_hash          |
+| ------------------ | ----------------------- | ----------------------------- |
+| Max file size      | **20 MB** (short clips) | **2 GB**                      |
+| How                | api.telegram.org        | **Local Bot API server**      |
 
-**שימוש:**
-- **שלח סרטון** (עדיף כ"קובץ/Document" לאיכות מלאה). צרף **כיתוב** כדי לקבוע שם, או שנה אח"כ.
-- פקודות: `/status`, `/list`, `/get <שם או #>`, `/last`, `/all`, `/rename <# או שם> <שם חדש>`, `/name <שם חדש>`.
+For short clips, Token + User ID are enough. For large files, add api_id/api_hash.
+(Changing api_id/api_hash later needs `docker compose restart telegram-bot-api`;
+everything else is applied live.)
 
-**אבטחה:** רק ה-User IDs שברשימת המורשים יכולים לדבר עם הבוט. אל תשאיר את הרשימה ריקה.
+**Commands:** send a video/audio/voice note (as a **Document/file** for best
+quality), then use:
 
-## החלפת תיקיית וידאו
+- `/status` — what's processing / queued / done
+- `/list` — all files and their status
+- `/get [name|#]` — list ready transcripts, or send one (partial-name search)
+- `/last` — the most recent finished transcript
+- `/all` — transcribe everything not yet done
+- `/redo <name|#>` — re-transcribe an existing file
+- `/rename <#|name> <new name>` — rename a file (and its transcripts)
+- `/name <new name>` — name the file you just sent
+- `/delete <name|#>` — delete a file + transcripts (with confirmation)
 
-ערוך את `.env` (או הגדר משתני סביבה) והצבע על כל תיקייה במחשב:
+**Security:** only allow-listed User IDs can talk to the bot. Don't leave the
+allow-list empty, and don't expose the port to the internet.
+
+### Choosing the transcription language
+
+Use the **language dropdown** in the top bar: Hebrew (default), auto-detect, or
+one of the built-in languages. It's saved and applies to new jobs immediately —
+no restart. To fix an already-done file, pick a language and then re-transcribe
+it (UI "Transcribe again", or `/redo` in the bot).
+
+### Changing the model
+
+Set an env var — **no rebuild needed**:
 
 ```bash
-VIDEOS_DIR=/Users/me/Movies/lectures
-TRANSCRIPTS_DIR=/Users/me/Movies/lectures/transcripts
+WHISPER_MODEL=medium     # faster/lighter, lower quality
+WHISPER_MODEL=large-v3   # default — best quality
+WHISPER_MODEL=turbo      # (large-v3-turbo) much faster, near-large quality
 ```
 
-התיקייה ממופה ל-`/app/videos` בתוך הקונטיינר כ-read-only (המערכת אף פעם לא כותבת אליה).
-לאחר שינוי, הרץ מחדש: `docker compose up -d`.
+Then `docker compose up -d`. Supported: `tiny`, `base`, `small`, `medium`,
+`large-v3`, `turbo`.
 
-## החלפת מודל
+### Model cache (named volume)
 
-המודל נקבע דרך משתנה סביבה — **אין צורך לבנות מחדש את ה-image**:
+The model is **not** baked into the image. `docker-compose.yml` defines a named
+volume `whisper-cache` mapped to `/root/.cache/huggingface`, so the model
+downloads **once per machine** and survives restarts, `down/up`, and even image
+rebuilds. To wipe everything (including the DB): `docker compose down -v`.
 
-```bash
-# ב-.env, או בשורת הפקודה
-WHISPER_MODEL=medium        # מהיר וקל יותר, איכות נמוכה יותר
-WHISPER_MODEL=large-v3      # ברירת המחדל — האיכות הגבוהה ביותר
-WHISPER_MODEL=turbo         # (large-v3-turbo) מהיר בהרבה, איכות קרובה ל-large
-```
+### Configuration (environment variables)
 
-ואז: `docker compose up -d`. אפשר גם להחליף שפה: `WHISPER_LANGUAGE=en` (ריק = זיהוי אוטומטי).
+| Variable                     | Default              | Description                                   |
+| ---------------------------- | -------------------- | --------------------------------------------- |
+| `WHISPER_MODEL`              | `large-v3`           | Transcription model                           |
+| `WHISPER_LANGUAGE`           | `he`                 | Default language (overridden by the UI picker)|
+| `WHISPER_COMPUTE_TYPE`       | `int8`               | CPU quantization                              |
+| `WHISPER_BEAM_SIZE`          | `8`                  | Beam search width                             |
+| `WHISPER_TEMPERATURE`        | `0.0,0.2,…,1.0`      | Temperature fallback (anti-loop)              |
+| `WHISPER_CONDITION_PREVIOUS` | `false`              | Feed previous text (false reduces loops)      |
+| `WHISPER_REPETITION_PENALTY` | `1.1`                | Penalty on repeats                            |
+| `WHISPER_NO_REPEAT_NGRAM`    | `0`                  | Hard-block repeated n-grams (0=off)           |
+| `WORKER_CONCURRENCY`         | `1`                  | Files transcribed in parallel                 |
+| `VIDEOS_DIR`                 | `./videos`           | Input folder (host)                           |
+| `TRANSCRIPTS_DIR`            | `./transcripts`      | Output folder (host)                          |
+| `TELEGRAM_DOWNLOAD_TIMEOUT`  | `1800`               | Max seconds to download a file via the bot    |
 
-מודלים נוספים שנתמכים: `tiny`, `base`, `small`, `medium`, `large-v3`, `turbo`.
-
-## Cache של המודל (named volume)
-
-המודל **לא** נאפה בתוך ה-image. במקום זה, `docker-compose.yml` מגדיר named volume בשם
-`whisper-cache` הממופה ל-`/root/.cache/huggingface`. לכן:
-
-- **הורדה חד-פעמית בכל מחשב** — בפעם הראשונה שה-worker רץ, המודל יורד ל-volume.
-- **נשמר בין הרצות** — `restart`, `docker compose down/up`, ואפילו `--build` (rebuild של ה-image)
-  לא מוחקים את ה-volume, כך שאין הורדה חוזרת.
-- כל מי שמושך את הפרויקט מ-git עושה `clone + build` מקומי; המודל יורד אצלו פעם אחת ברשת.
-
-למחיקת ה-cache (למשל לפינוי מקום): `docker compose down -v` (⚠️ ימחק גם את ה-DB).
-
-## הגדרות (משתני סביבה)
-
-| משתנה | ברירת מחדל | תיאור |
-|---|---|---|
-| `WHISPER_MODEL` | `large-v3` | מודל התמלול |
-| `WHISPER_LANGUAGE` | `he` | שפת התמלול (ריק = זיהוי אוטומטי) |
-| `WHISPER_COMPUTE_TYPE` | `int8` | קוונטיזציה ל-CPU |
-| `WHISPER_BEAM_SIZE` | `8` | רוחב ה-beam search |
-| `WORKER_CONCURRENCY` | `1` | כמה סרטונים לעבד במקביל |
-| `VIDEOS_DIR` | `./videos` | תיקיית הקלט (host) |
-| `TRANSCRIPTS_DIR` | `./transcripts` | תיקיית הפלט (host) |
-
-הגדרות התמלול הקבועות לפי הדרישות: `vad_filter=True`, `condition_on_previous_text=True`,
-`temperature=0.0`, `device="cpu"`.
-
-## מבנה הפרויקט
+### Project structure
 
 ```
 .
-├── docker-compose.yml      # api + worker + redis + named volume (whisper-cache)
-├── Dockerfile              # image משותף ל-api ול-worker (כולל ffmpeg)
+├── docker-compose.yml      # api + worker + redis + bot + telegram-bot-api + volumes
+├── Dockerfile              # shared image (includes ffmpeg)
 ├── requirements.txt
-├── .env.example            # כל משתני הסביבה
+├── .env.example
+├── LICENSE                 # MIT
 ├── app/
-│   ├── config.py           # קריאת הגדרות מ-env
-│   ├── db.py               # שכבת SQLite (jobs + settings, timestamps)
-│   ├── celery_app.py       # הגדרת Celery (broker/back­end = Redis)
-│   ├── worker.py           # משימת התמלול (faster-whisper) — error handling per-job
-│   ├── bot.py              # בוט Telegram (קליטה, פקודות, שינוי שם, התראות)
-│   └── main.py             # FastAPI: רשימת וידאו, הפעלה, סטטוס, הורדות, הגדרות
+│   ├── config.py           # settings from env
+│   ├── db.py               # SQLite layer (jobs + settings)
+│   ├── celery_app.py       # Celery config (broker/backend = Redis)
+│   ├── worker.py           # transcription task + startup resume
+│   ├── bot.py              # Telegram bot (receive, commands, rename, delete, notify)
+│   └── main.py             # FastAPI: media list, transcribe, status, downloads, settings
 ├── scripts/
-│   └── telegram-api-entrypoint.sh  # entrypoint לשרת ה-Bot API המקומי
+│   └── telegram-api-entrypoint.sh  # entrypoint for the local Bot API server
 ├── frontend/
-│   └── index.html          # ממשק (HTML/JS) עם polling + חלון הגדרות Telegram
-├── videos/                 # קלט (mount, read-only)
-├── transcripts/            # פלט (SRT + TXT)
-└── data/                   # קובץ ה-SQLite (משותף בין api ל-worker)
+│   └── index.html          # single-file UI (bilingual, polling, settings modal)
+├── videos/                 # input (mounted)
+├── transcripts/            # output (SRT + TXT)
+└── data/                   # SQLite DB + telegram creds (git-ignored)
 ```
 
-## עמידות בפני כשלים
+### Resilience
 
-כל קובץ מעובד כ-job עצמאי. אם תמלול של קובץ נכשל (קובץ פגום, ללא אודיו וכו'),
-ה-job מסומן `failed` עם הודעת השגיאה, פלט חלקי נמחק, **ושאר התור ממשיך לרוץ כרגיל**.
-`task_acks_late` מבטיח שאם ה-worker קורס באמצע, ה-job חוזר לתור במקום ללכת לאיבוד.
+Every file is an independent job. If one fails (corrupt file, no audio…), it's
+marked `failed` with the error, partial output is cleaned up, and the rest of
+the queue continues. On restart/reboot, pending jobs are re-queued automatically
+(an interrupted file restarts from the beginning — Whisper has no mid-file
+checkpoint).
 
-## הערות
+### License
 
-- זו מערכת פנימית לשימוש אישי — אין אימות/הרשאות, אין deployment לענן. אל תחשוף את הפורט לאינטרנט.
-- ריצה על CPU: תמלול `large-v3` איטי (דקות עד עשרות דקות לסרטון, תלוי באורך ובחומרה). זה תקין — לכן העיבוד ברקע.
+[MIT](LICENSE) © 2026 Peer Abitbul.
+
+Uses faster-whisper, FastAPI, Celery, Redis, python-telegram-bot, and the
+`aiogram/telegram-bot-api` server — each under its own license.
+
+---
+
+## עברית
+
+מערכת תמלול מקומית ופרטית עם ממשק web ובוט טלגרם. זורקים סרטונים או אודיו ומקבלים
+תמלול **SRT + TXT**, מבוסס [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
+(מודל `large-v3` כברירת מחדל). הכול רץ אצלך ב-Docker — בלי ענן, בלי העלאה לגורם חיצוני.
+
+### יכולות
+
+- 🎬 **וידאו ואודיו** — mp4, mkv, avi… וגם mp3, wav, m4a, ogg, הקלטות קוליות.
+- 🌐 **ממשק web (עברית / אנגלית)** — רשימת מדיה, תמלול בודד או "עבד את הכל", התקדמות חיה, תצוגה מקדימה, הורדת SRT/TXT, שינוי שם ומחיקה.
+- 🗣️ **בורר שפה** — בחירת שפת התמלול (ברירת מחדל עברית) או זיהוי אוטומטי; נשמר.
+- 🤖 **בוט טלגרם** — שולחים סרטון/אודיו/הקלטה והוא מוריד, מתמלל ומודיע בסיום. פקודות מלאות. מוגדר לגמרי מהממשק.
+- ⏳ **תור ברקע** — זורקים הרבה קבצים וסוגרים את המחשב; העבודות רצות אחת אחרי השנייה. טיפול בשגיאות פר-קובץ: קובץ פגום לא עוצר את השאר.
+- ♻️ **עמיד לכיבוי/reboot** — Redis קבוע + הרצה-מחדש בהפעלה מחזירים עבודות ממתינות לבד.
+- 📦 **מודל נשמר לכל מחשב** — יורד פעם אחת ל-volume (לא אפוי ב-image) ושורד rebuild.
+- 🔒 **מקומי ופרטי** — לשימוש אישי, בלי אימות, שום דבר לא עוזב את המחשב.
+
+### ארכיטקטורה
+
+חמישה שירותים (ב-`docker-compose.yml`): **api** (ממשק + REST), **worker** (התמלול),
+**redis** (התור), **bot** (טלגרם), ו-**telegram-bot-api** (שרת Bot API מקומי להורדות גדולות).
+
+### דרישות מוקדמות
+
+- Docker + Docker Compose. אין צורך ב-Python או בהתקנות נוספות — הכול בקונטיינרים.
+
+### הרצה מהירה
+
+```bash
+cp .env.example .env          # אופציונלי
+# שים קבצי וידאו/אודיו ב-./videos
+docker compose up --build
+```
+
+פתח **http://localhost:8000**. בהרצה הראשונה המודל (`large-v3`, כמה GB) יורד
+פעם אחת ל-cache; התמלול הראשון מתחיל אחרי שההורדה מסתיימת. לעצירה: `Ctrl+C` ואז
+`docker compose down` (הנתונים והמודל נשמרים).
+
+> **נתיב עם תווים לא-אנגליים:** אם שם התיקייה אינו אנגלי, הרץ עם BuildKit מכובה:
+> `DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 docker compose up --build`
+> (או שים את הפרויקט בנתיב באנגלית).
+
+### שימוש בממשק
+
+- כל קובץ מדיה מוצג בשורה עם סטטוס. **תמלל** מכניס לתור (`בתור → מעבד → הושלם`) עם **אחוז** חי.
+- **עבד את הכל** — מכניס לתור כל מה שלא תומלל. **תצוגה מקדימה** — פותח את הטקסט (רגיל או SRT).
+- **SRT / TXT** — הורדה (נשמר גם ב-`./transcripts`). **🗑 מחיקה** — מסיר קובץ + תמלולים (עם אישור).
+- **בורר שפה** למעלה בוחר את שפת התמלול; **⚙️** פותח את הגדרות הטלגרם.
+
+### בוט טלגרם (אופציונלי)
+
+**הגדרה — הכל מהממשק, פעם אחת (נשמר לתמיד):**
+
+1. פתח את http://localhost:8000 ולחץ **⚙️**.
+2. עקוב אחר השלבים:
+   - **חובה** — בוט ב-[@BotFather](https://t.me/BotFather) (`/newbot`) → **Bot Token**.
+   - **חובה** — ה-**User ID** שלך מ-[@userinfobot](https://t.me/userinfobot).
+   - **אופציונלי** — אפליקציה ב-[my.telegram.org](https://my.telegram.org/auth) → **api_id** + **api_hash**.
+3. מלא, סמן **הפעל את הבוט**, ושמור. החיווי יעבור ל**מחובר ✅**.
+
+**שני מצבים:** בלי api_id/api_hash — עד **20MB** (קצרים). עם api_id/api_hash — עד **2GB**
+(דרך שרת Bot API מקומי). שינוי api_id/api_hash בעתיד דורש `docker compose restart telegram-bot-api`;
+שאר ההגדרות נטענות חם.
+
+**פקודות:** שלח וידאו/אודיו/הקלטה (עדיף כ"קובץ/Document" לאיכות), ואז:
+`/status` · `/list` · `/get [שם|#]` · `/last` · `/all` · `/redo <שם|#>` ·
+`/rename <#|שם> <שם חדש>` · `/name <שם חדש>` · `/delete <שם|#>`.
+
+**אבטחה:** רק User IDs מורשים יכולים לדבר עם הבוט. אל תשאיר את הרשימה ריקה, ואל תחשוף את הפורט לאינטרנט.
+
+### בחירת שפת תמלול
+
+בורר השפה למעלה: עברית (ברירת מחדל), זיהוי אוטומטי, או שפה מובנית. נשמר וחל מיד על
+עבודות חדשות בלי restart. לתיקון קובץ שכבר תומלל — בחר שפה ואז תמלל מחדש ("תמלל שוב" בממשק, או `/redo` בבוט).
+
+### החלפת מודל
+
+משתנה סביבה, **בלי rebuild**: `WHISPER_MODEL=medium|large-v3|turbo`, ואז `docker compose up -d`.
+נתמכים: `tiny`, `base`, `small`, `medium`, `large-v3`, `turbo`.
+
+### Cache של המודל
+
+המודל **לא** אפוי ב-image. `whisper-cache` (named volume) ממופה ל-`/root/.cache/huggingface`,
+כך שהמודל יורד **פעם אחת בכל מחשב** ושורד restart, `down/up` ו-rebuild. למחיקת הכול (כולל DB):
+`docker compose down -v`.
+
+### הגדרות (משתני סביבה)
+
+ראה את הטבלה בחלק האנגלי (§Configuration) ואת `.env.example`. עיקרי: `WHISPER_MODEL`,
+`WHISPER_LANGUAGE`, `WORKER_CONCURRENCY`, `VIDEOS_DIR`, `TRANSCRIPTS_DIR`, `TELEGRAM_DOWNLOAD_TIMEOUT`.
+
+### עמידות בפני כשלים
+
+כל קובץ הוא job עצמאי. כשל בקובץ (פגום/בלי אודיו) מסומן `failed` עם השגיאה, פלט חלקי נמחק,
+והתור ממשיך. בהפעלה מחדש עבודות ממתינות חוזרות לתור אוטומטית (קובץ שנקטע מתחיל מ-0 — ל-Whisper אין checkpoint).
+
+### רישיון
+
+[MIT](LICENSE) © 2026 Peer Abitbul. משתמש ב-faster-whisper, FastAPI, Celery, Redis,
+python-telegram-bot, ושרת `aiogram/telegram-bot-api` — כל אחד תחת הרישיון שלו.
