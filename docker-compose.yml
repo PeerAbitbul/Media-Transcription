@@ -24,8 +24,11 @@ services:
       - DB_PATH=/app/data/jobs.db
       - VIDEOS_DIR=/app/videos
       - TRANSCRIPTS_DIR=/app/transcripts
-      - WHISPER_MODEL=${WHISPER_MODEL:-large-v3}
+      - WHISPER_MODEL=${WHISPER_MODEL:-ivrit-ai/whisper-large-v3-ct2}
+      - WHISPER_MODEL_MULTILINGUAL=${WHISPER_MODEL_MULTILINGUAL:-large-v3}
       - WHISPER_LANGUAGE=${WHISPER_LANGUAGE:-he}
+      # Same default the worker uses, so the UI toggle starts in sync.
+      - DIARIZATION=${DIARIZATION:-1}
     volumes:
       # Read-write so the UI can delete videos (transcription only reads them).
       - ${VIDEOS_DIR:-./videos}:/app/videos
@@ -46,10 +49,14 @@ services:
       - DB_PATH=/app/data/jobs.db
       - VIDEOS_DIR=/app/videos
       - TRANSCRIPTS_DIR=/app/transcripts
-      - WHISPER_MODEL=${WHISPER_MODEL:-large-v3}
+      - WHISPER_MODEL=${WHISPER_MODEL:-ivrit-ai/whisper-large-v3-ct2}
+      - WHISPER_MODEL_MULTILINGUAL=${WHISPER_MODEL_MULTILINGUAL:-large-v3}
       - WHISPER_LANGUAGE=${WHISPER_LANGUAGE:-he}
       - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE:-int8}
       - WHISPER_BEAM_SIZE=${WHISPER_BEAM_SIZE:-8}
+      # Speaker diarization default (the live toggle lives in the web UI).
+      - DIARIZATION=${DIARIZATION:-1}
+      - DIARIZATION_MODEL=${DIARIZATION_MODEL:-ivrit-ai/pyannote-speaker-diarization-3.1}
     volumes:
       - ${VIDEOS_DIR:-./videos}:/app/videos:ro
       - ${TRANSCRIPTS_DIR:-./transcripts}:/app/transcripts

@@ -3,6 +3,14 @@ uvicorn[standard]==0.34.0
 celery==5.4.0
 redis==5.2.1
 faster-whisper==1.1.1
+# Speaker diarization ("Speaker 1 / Speaker 2"). Pulls torch — in Docker the
+# Dockerfile pre-installs CPU-only torch wheels to keep the image lean.
+pyannote.audio==3.3.2
+# pyannote 3.x still passes use_auth_token, which huggingface_hub 1.x removed —
+# pin a version that satisfies both pyannote and faster-whisper.
+huggingface_hub==0.27.1
+# pyannote 3.3 imports matplotlib without declaring it as a dependency.
+matplotlib==3.9.4
 # Required by huggingface_hub to download the Whisper model at runtime.
 requests==2.32.3
 python-multipart==0.0.20

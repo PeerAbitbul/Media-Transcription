@@ -9,6 +9,12 @@ import os
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 DB_PATH = os.getenv("DB_PATH", "/app/data/jobs.db")
 
+# Worker liveness. The worker writes a heartbeat every INTERVAL seconds; the UI
+# treats the worker as online if the last heartbeat is within STALE seconds.
+# STALE has generous slack so a long transcription step never flips it to red.
+WORKER_HEARTBEAT_INTERVAL = float(os.getenv("WORKER_HEARTBEAT_INTERVAL", "5"))
+WORKER_HEARTBEAT_STALE = float(os.getenv("WORKER_HEARTBEAT_STALE", "30"))
+
 # --- Paths ------------------------------------------------------------------
 VIDEOS_DIR = os.getenv("VIDEOS_DIR", "/app/videos")
 TRANSCRIPTS_DIR = os.getenv("TRANSCRIPTS_DIR", "/app/transcripts")
@@ -21,11 +27,34 @@ AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".oga", ".opus",
 MEDIA_EXTENSIONS = VIDEO_EXTENSIONS | AUDIO_EXTENSIONS
 
 # --- Whisper / transcription ------------------------------------------------
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "large-v3")
+# The model is picked automatically per job based on the selected language:
+#   Hebrew                → WHISPER_MODEL (ivrit.ai's Hebrew fine-tune of large-v3)
+#   anything else / auto  → WHISPER_MODEL_MULTILINGUAL (original OpenAI large-v3,
+#                           which is stronger outside Hebrew and detects language)
+# Both accept any faster-whisper model name or CTranslate2 HF repo.
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "ivrit-ai/whisper-large-v3-ct2")
+WHISPER_MODEL_MULTILINGUAL = os.getenv("WHISPER_MODEL_MULTILINGUAL", "large-v3")
+
+
+def model_for_language(language: str | None) -> str:
+    """Model to use for a given language code (None/"auto" → multilingual)."""
+    return WHISPER_MODEL if language == "he" else WHISPER_MODEL_MULTILINGUAL
+
+
 WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "he")
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 WHISPER_BEAM_SIZE = int(os.getenv("WHISPER_BEAM_SIZE", "8"))
+
+# --- Speaker diarization ------------------------------------------------------
+# "Speaker 1 / Speaker 2" labels via pyannote. The default pipeline is ivrit.ai's
+# open mirror of pyannote/speaker-diarization-3.1, so no HF token is needed.
+# DIARIZATION sets the default on/off; the live value is toggled from the web UI
+# (stored in the settings table, applies to new jobs without a restart).
+DIARIZATION_MODEL = os.getenv("DIARIZATION_MODEL", "ivrit-ai/pyannote-speaker-diarization-3.1")
+DIARIZATION_DEFAULT = "1" if os.getenv("DIARIZATION", "1").lower() in ("1", "true", "yes") else "0"
+# Device for the diarization pipeline: auto = cuda → mps → cpu.
+DIARIZATION_DEVICE = os.getenv("DIARIZATION_DEVICE", "auto")
 
 # Anti-hallucination / anti-loop decoding controls. Whisper is prone to getting
 # stuck repeating a phrase; these defaults prevent that:

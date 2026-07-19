@@ -8,7 +8,7 @@ import sqlite3
 import time
 from contextlib import contextmanager
 
-from app.config import DB_PATH
+from app.config import DB_PATH, TRANSCRIPTS_DIR
 
 # Valid job lifecycle states.
 STATUS_QUEUED = "queued"
@@ -67,6 +67,19 @@ def init_db():
             )
             """
         )
+        # Shared event log — every service (api, worker, bot) appends here and
+        # the UI reads it, giving one log view across all of them.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS logs (
+                id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts      REAL NOT NULL,
+                source  TEXT NOT NULL,
+                level   TEXT NOT NULL,
+                message TEXT NOT NULL
+            )
+            """
+        )
         # Migrations: add columns to tables created before they existed.
         cols = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
         if "progress" not in cols:
@@ -77,6 +90,10 @@ def init_db():
             conn.execute("ALTER TABLE jobs ADD COLUMN chat_id TEXT")
         if "notified" not in cols:
             conn.execute("ALTER TABLE jobs ADD COLUMN notified INTEGER NOT NULL DEFAULT 0")
+        if "speakers" not in cols:
+            conn.execute("ALTER TABLE jobs ADD COLUMN speakers INTEGER")
+        if "stage" not in cols:
+            conn.execute("ALTER TABLE jobs ADD COLUMN stage TEXT")
 
 
 def create_job(filename: str, source: str = "web", chat_id: str | None = None) -> int:
@@ -108,7 +125,7 @@ def mark_processing(job_id: int):
     with _connect() as conn:
         conn.execute(
             "UPDATE jobs SET status = ?, started_at = ?, updated_at = ?, "
-            "progress = 0, error = NULL WHERE id = ?",
+            "progress = 0, stage = NULL, error = NULL WHERE id = ?",
             (STATUS_PROCESSING, now, now, job_id),
         )
 
@@ -122,14 +139,41 @@ def set_progress(job_id: int, progress: float):
         )
 
 
-def mark_done(job_id: int, srt_path: str, txt_path: str, language: str, duration: float):
+def set_stage(job_id: int, stage: str | None):
+    """Set the current phase of a running job (diarizing / downloading_model /
+    loading_model / transcribing) so the UI can show what it's doing."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE jobs SET stage = ?, updated_at = ? WHERE id = ?",
+            (stage, time.time(), job_id),
+        )
+
+
+def mark_done(job_id: int, srt_path: str, txt_path: str, language: str, duration: float,
+              speakers: int | None = None):
     now = time.time()
     with _connect() as conn:
         conn.execute(
             "UPDATE jobs SET status = ?, srt_path = ?, txt_path = ?, language = ?, "
-            "duration = ?, progress = 100, finished_at = ?, updated_at = ? WHERE id = ?",
-            (STATUS_DONE, srt_path, txt_path, language, duration, now, now, job_id),
+            "duration = ?, speakers = ?, progress = 100, finished_at = ?, updated_at = ? "
+            "WHERE id = ?",
+            (STATUS_DONE, srt_path, txt_path, language, duration, speakers, now, now, job_id),
         )
+
+
+def resolve_output_path(path: str | None) -> str | None:
+    """Return a transcript path that exists, tolerating a moved transcripts dir.
+
+    Jobs store the absolute path the worker wrote to; if that exact path is
+    gone (e.g. TRANSCRIPTS_DIR was remapped) fall back to the same basename
+    inside the current transcripts folder.
+    """
+    if not path:
+        return None
+    if os.path.isfile(path):
+        return path
+    fallback = os.path.join(TRANSCRIPTS_DIR, os.path.basename(path))
+    return fallback if os.path.isfile(fallback) else None
 
 
 def mark_failed(job_id: int, error: str):
@@ -274,3 +318,43 @@ def get_settings(keys: list[str]) -> dict:
             f"SELECT key, value FROM settings WHERE key IN ({placeholders})", keys
         ).fetchall()
         return {r["key"]: r["value"] for r in rows}
+
+
+# --------------------------------------------------------------------------
+# Event log (shared ring buffer)
+# --------------------------------------------------------------------------
+# Keep only the most recent lines so the table never grows without bound.
+LOG_MAX_ROWS = 500
+
+
+def add_log(source: str, message: str, level: str = "info"):
+    """Append one line to the shared event log and trim old rows. Best-effort."""
+    try:
+        with _connect() as conn:
+            conn.execute(
+                "INSERT INTO logs (ts, source, level, message) VALUES (?, ?, ?, ?)",
+                (time.time(), source, level, str(message)[:1000]),
+            )
+            # Trim: delete everything older than the newest LOG_MAX_ROWS rows.
+            conn.execute(
+                "DELETE FROM logs WHERE id <= "
+                "(SELECT MAX(id) FROM logs) - ?",
+                (LOG_MAX_ROWS,),
+            )
+    except Exception:  # noqa: BLE001 — logging must never break the caller
+        pass
+
+
+def get_logs(limit: int = 200, source: str | None = None) -> list[dict]:
+    """Return the most recent log lines (newest first), optionally by source."""
+    with _connect() as conn:
+        if source and source != "all":
+            rows = conn.execute(
+                "SELECT * FROM logs WHERE source = ? ORDER BY id DESC LIMIT ?",
+                (source, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM logs ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]

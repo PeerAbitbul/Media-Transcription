@@ -19,6 +19,14 @@ __pycache__/
 *.pyc
 *.pyo
 
+.venv-worker/
+.venv/
+venv/
+
+# Frontend build artifacts (Vite) — built in Docker, never committed.
+frontend/node_modules/
+frontend/dist/
+
 # OS / editor
 .DS_Store
 Thumbs.db

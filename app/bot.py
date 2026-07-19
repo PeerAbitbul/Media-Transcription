@@ -140,8 +140,8 @@ def perform_rename(current_filename: str, job, new_base: str):
     if job and job.get("status") == db.STATUS_DONE:
         new_base_only = os.path.splitext(new_name)[0]
         for kind in ("srt", "txt"):
-            old = job.get(f"{kind}_path")
-            if old and os.path.exists(old):
+            old = db.resolve_output_path(job.get(f"{kind}_path"))
+            if old:
                 newp = os.path.join(config.TRANSCRIPTS_DIR, f"{new_base_only}.{kind}")
                 os.rename(old, newp)
                 if kind == "srt":
@@ -232,8 +232,8 @@ async def _send_results(context, chat_id, job):
     """Send a job's SRT + TXT files to a chat."""
     sent = False
     for key in ("srt_path", "txt_path"):
-        path = job.get(key)
-        if path and os.path.isfile(path):
+        path = db.resolve_output_path(job.get(key))
+        if path:
             with open(path, "rb") as fh:
                 await context.bot.send_document(chat_id, document=fh,
                                                 filename=os.path.basename(path))
@@ -354,8 +354,8 @@ def _delete_video_and_outputs(filename: str):
     videos_root = os.path.abspath(config.VIDEOS_DIR)
     for job in db.jobs_for_file(filename):
         for key in ("srt_path", "txt_path"):
-            path = job.get(key)
-            if path and os.path.isfile(path):
+            path = db.resolve_output_path(job.get(key))
+            if path:
                 try:
                     os.remove(path)
                 except OSError:
@@ -532,8 +532,11 @@ async def notify_loop(application):
             for job in db.jobs_pending_notification():
                 chat_id = job["chat_id"]
                 if job["status"] == db.STATUS_DONE:
+                    speakers = job.get("speakers")
+                    extra = f" · {speakers} דוברים" if speakers and speakers > 1 else ""
                     await application.bot.send_message(
-                        chat_id, f"✅ הושלם: `{job['filename']}`", parse_mode="Markdown")
+                        chat_id, f"✅ הושלם: `{job['filename']}`{extra}",
+                        parse_mode="Markdown")
                     await _send_results(application, chat_id, job)
                 else:
                     await application.bot.send_message(
@@ -620,6 +623,7 @@ async def run():
                 db.set_setting("tg_bot_username", me.username or "")
                 db.set_setting("tg_status", "connected")
                 db.set_setting("tg_last_error", "")
+                db.add_log("bot", f"Telegram connected as @{me.username}")
                 print(f"[bot] connected as @{me.username}", flush=True)
             except Exception as e:  # noqa: BLE001
                 db.set_setting("tg_status", "error")

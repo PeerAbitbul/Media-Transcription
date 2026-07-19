@@ -1,0 +1,14 @@
+# Keep the build context small and force a clean in-image npm build.
+**/__pycache__
+**/*.pyc
+frontend/node_modules
+frontend/dist
+.venv-worker
+.venv
+venv
+data
+videos
+transcripts
+.git
+.gitignore
+*.md

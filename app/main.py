@@ -41,6 +41,7 @@ def _enqueue(filename: str) -> dict:
     job_id = db.create_job(filename)
     result = celery.send_task("app.worker.transcribe", args=[job_id, filename])
     db.set_task_id(job_id, result.id)
+    db.add_log("api", f"Queued '{filename}' (#{job_id})")
     return db.get_job(job_id)
 
 
@@ -95,8 +96,8 @@ def _result_path(job_id: int, kind: str) -> str:
     job = db.get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    path = job.get("srt_path") if kind == "srt" else job.get("txt_path")
-    if not path or not os.path.isfile(path):
+    path = db.resolve_output_path(job.get("srt_path") if kind == "srt" else job.get("txt_path"))
+    if not path:
         raise HTTPException(status_code=404, detail="Result not ready")
     return path
 
@@ -120,8 +121,8 @@ def delete_video_and_outputs(filename: str):
     videos_root = os.path.abspath(config.VIDEOS_DIR)
     for job in db.jobs_for_file(filename):
         for key in ("srt_path", "txt_path"):
-            path = job.get(key)
-            if path and os.path.isfile(path):
+            path = db.resolve_output_path(job.get(key))
+            if path:
                 try:
                     os.remove(path)
                 except OSError:
@@ -147,17 +148,61 @@ def delete_video(payload: dict):
     return {"ok": True, "filename": filename}
 
 
+@app.get("/api/health")
+def get_health():
+    """Report whether a transcription worker is online (drives the UI light).
+
+    Primary signal is the worker's DB heartbeat: it stays fresh even while the
+    worker is mid-transcription under a single-process (solo) pool, where a
+    Celery control ping would time out and look offline. A control ping is a
+    fallback for the brief window right after startup before the first
+    heartbeat lands. No worker online means queued jobs won't move — the UI
+    shows this so a stopped worker is never silent.
+    """
+    online = False
+    hb = db.get_setting("worker_heartbeat")
+    if hb:
+        try:
+            online = (time.time() - float(hb)) < config.WORKER_HEARTBEAT_STALE
+        except ValueError:
+            online = False
+    if not online:
+        try:
+            online = bool(celery.control.ping(timeout=0.5))
+        except Exception:  # noqa: BLE001 — broker hiccup → offline, never 500
+            online = False
+    return {"worker_online": online}
+
+
+@app.get("/api/logs")
+def get_logs(limit: int = 200, source: str = "all"):
+    """Recent event-log lines from all services (shared DB ring buffer)."""
+    return {"logs": db.get_logs(limit=min(limit, 500), source=source)}
+
+
 @app.get("/api/config")
 def get_config():
     """Expose non-sensitive settings so the UI can show the active model."""
+    language = db.get_setting("whisper_language", config.WHISPER_LANGUAGE)
+    effective_lang = None if not language or language == "auto" else language
     return JSONResponse(
         {
-            "model": config.WHISPER_MODEL,
-            "language": db.get_setting("whisper_language", config.WHISPER_LANGUAGE),
+            # The model that will actually run for the selected language.
+            "model": config.model_for_language(effective_lang),
+            "language": language,
             "compute_type": config.WHISPER_COMPUTE_TYPE,
             "beam_size": config.WHISPER_BEAM_SIZE,
+            "diarization": db.get_setting("diarization", config.DIARIZATION_DEFAULT) == "1",
         }
     )
+
+
+@app.post("/api/diarization")
+def set_diarization(payload: dict):
+    """Toggle speaker diarization (applies to new jobs, no restart needed)."""
+    enabled = bool((payload or {}).get("enabled"))
+    db.set_setting("diarization", "1" if enabled else "0")
+    return {"ok": True, "enabled": enabled}
 
 
 @app.post("/api/language")
@@ -239,5 +284,8 @@ def save_telegram_settings(payload: dict):
     return get_telegram_settings()
 
 
-# Serve the static frontend at the root. Mounted last so /api/* wins.
-app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
+# Serve the built React frontend at the root. Mounted last so /api/* wins.
+# The Dockerfile builds frontend/dist (Vite); fall back to the raw folder for a
+# non-Docker run where the app hasn't been built.
+_FRONTEND_DIR = "frontend/dist" if os.path.isdir("frontend/dist") else "frontend"
+app.mount("/", StaticFiles(directory=_FRONTEND_DIR, html=True), name="frontend")
